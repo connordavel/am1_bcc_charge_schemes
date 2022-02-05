@@ -81,7 +81,7 @@ class MolDatabase:
             self.files = [("smiles", "smiles", None)]
         else:
             self.files = [
-                        #   ("file", "sdf", Path( Path.cwd() / "MiniDrugBank.sdf")),
+                        ("file", "sdf", Path( Path.cwd() / "MiniDrugBank.sdf")),
                         #   ("file", "sdf", Path( Path.cwd() / "burn-in.sdf")),
                         ("protein", "mol2", Path("/home/coda3831/openff-workspace/amber-ff-porting/parameter_deduplication/amber-ff-porting")),
                         ("smiles", "smiles", Path())
@@ -126,6 +126,10 @@ class MolDatabase:
             file_path = Path(file_path)
         try:
             for off_mol in Molecule.from_file(str(file_path), file_format="SDF", allow_undefined_stereo=True):
+                try:
+                    Molecule.from_smiles(off_mol.to_smiles())
+                except UndefinedStereochemistryError:
+                    off_mol = [off_mol, *off_mol.enumerate_stereoisomers()][-1]
                 if off_mol.n_atoms == 0:
                     yield self.failed()
                 elif off_mol.n_atoms <= self.max_mol_size:
@@ -179,6 +183,10 @@ class MolDatabase:
             if file.name in file_names:
                 try:
                     off_mol = Molecule.from_file(str(file), file_format="MOL2", allow_undefined_stereo=True)
+                    try:
+                        Molecule.from_smiles(off_mol.to_smiles())
+                    except UndefinedStereochemistryError:
+                        off_mol = [off_mol, *off_mol.enumerate_stereoisomers()][-1]
                     if off_mol.n_atoms == 0:
                         yield self.failed()
                     elif off_mol.n_atoms <= self.max_mol_size:
@@ -1149,7 +1157,7 @@ if __name__ == "__main__":
             #--------------------------------------------------------------------------------
             # METHOD 2 ----------------------------------------------------------------------
             #--------------------------------------------------------------------------------
-            # MAXCYC = 0
+            # MAXCYC = 0 (most promising)
 
             args = ["-ek", 
                     f"qm_theory='AM1', grms_tol=0.0005, scfconv=1.d-10, ndiis_attempts=700, qmcharge={net_charge}, maxcyc=0"]
@@ -1169,91 +1177,92 @@ if __name__ == "__main__":
 
             open(f"{output_dir_str}/maxcyc_0_{output_dir_str}_status_results.txt","a").write(line)
 
-            #--------------------------------------------------------------------------------
-            # METHOD 3 ----------------------------------------------------------------------
-            #--------------------------------------------------------------------------------
-            # QMSHAKE
-            args = ["-ek", 
-                    f"qm_theory='AM1', grms_tol=0.0005, scfconv=1.d-10, ndiis_attempts=700, qmcharge={net_charge}, maxcyc=2000, qmshake=1"]
-            status = run_am1_bcc(mol, output_dir=f"{output_dir_str}/{mol.name}/shake", arguments=args)
+            # #--------------------------------------------------------------------------------
+            # # METHOD 3 ----------------------------------------------------------------------
+            # #--------------------------------------------------------------------------------
+            # # QMSHAKE (preliminary tests show that this does not do much to prevent large geometry changes)
+            # args = ["-ek", 
+            #         f"qm_theory='AM1', grms_tol=0.0005, scfconv=1.d-10, ndiis_attempts=700, qmcharge={net_charge}, maxcyc=2000, qmshake=1"]
+            # status = run_am1_bcc(mol, output_dir=f"{output_dir_str}/{mol.name}/shake", arguments=args)
 
-            line = ""
-            for conf, i in zip(mol.conformers, range(0, len(mol.conformers))):
-                mol_charges = output_dir / f"{mol.name}" / "shake" / f"conf{i}" / f"charges_{mol.name}.txt"
-                with open(str(mol_charges)) as file:
-                    charges = file.read().split()
-                line += (mol.name + delim)
-                line += (f"{i}" + delim)
-                for item in status.iloc[i]:
-                    line += (str(item) + delim)
-                line += delim.join(charges)
-                line += "\n"
+            # line = ""
+            # for conf, i in zip(mol.conformers, range(0, len(mol.conformers))):
+            #     mol_charges = output_dir / f"{mol.name}" / "shake" / f"conf{i}" / f"charges_{mol.name}.txt"
+            #     with open(str(mol_charges)) as file:
+            #         charges = file.read().split()
+            #     line += (mol.name + delim)
+            #     line += (f"{i}" + delim)
+            #     for item in status.iloc[i]:
+            #         line += (str(item) + delim)
+            #     line += delim.join(charges)
+            #     line += "\n"
 
-            open(f"{output_dir_str}/shake_{output_dir_str}_status_results.txt","a").write(line)
-            #--------------------------------------------------------------------------------
-            # METHOD 4 ----------------------------------------------------------------------
-            #--------------------------------------------------------------------------------
-            # SMIRNOFF
+            # open(f"{output_dir_str}/shake_{output_dir_str}_status_results.txt","a").write(line)
+            # #--------------------------------------------------------------------------------
+            # # METHOD 4 ----------------------------------------------------------------------
+            # #--------------------------------------------------------------------------------
+            # # SMIRNOFF (successful but computational cost does not justify the marginal (if even
+            # # noticeable improvement over maxcyc=0). Not pursued further)
 
-            mol_copy = Molecule(mol)
-            conf_num = 0
-            min_conformers = []
-            for conf in mol.conformers:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with temporary_cd(tmpdir):
-                        mol_conf = Molecule(mol)
-                        mol_conf._conformers = [conf]
-                        print(type(conf._value))
-                        mol_conf.to_file(file_path='mol.pdb', file_format="PDB")
-                        pdbfile = PDBFile('mol.pdb')
-                        omm_topology = pdbfile.topology
+            # mol_copy = Molecule(mol)
+            # conf_num = 0
+            # min_conformers = []
+            # for conf in mol.conformers:
+            #     with tempfile.TemporaryDirectory() as tmpdir:
+            #         with temporary_cd(tmpdir):
+            #             mol_conf = Molecule(mol)
+            #             mol_conf._conformers = [conf]
+            #             print(type(conf._value))
+            #             mol_conf.to_file(file_path='mol.pdb', file_format="PDB")
+            #             pdbfile = PDBFile('mol.pdb')
+            #             omm_topology = pdbfile.topology
 
-                        off_topology = mol_conf.to_topology()
-                        forcefield = ForceField('openff_unconstrained-1.3.0.offxml')
-                        system = forcefield.create_openmm_system(off_topology)
-                        time_step = 2*unit.femtoseconds  # simulation timestep
-                        temperature = 3000*unit.kelvin  # simulation temperature
-                        friction = 1/unit.picosecond  # collision rate
-                        integrator = openmm.LangevinIntegrator(temperature, friction, time_step)
-                        simulation = openmm.app.Simulation(omm_topology, system, integrator)
-                        positions = pdbfile.getPositions() 
-                        simulation.context.setPositions(positions)
+            #             off_topology = mol_conf.to_topology()
+            #             forcefield = ForceField('openff_unconstrained-1.3.0.offxml')
+            #             system = forcefield.create_openmm_system(off_topology)
+            #             time_step = 2*unit.femtoseconds  # simulation timestep
+            #             temperature = 3000*unit.kelvin  # simulation temperature
+            #             friction = 1/unit.picosecond  # collision rate
+            #             integrator = openmm.LangevinIntegrator(temperature, friction, time_step)
+            #             simulation = openmm.app.Simulation(omm_topology, system, integrator)
+            #             positions = pdbfile.getPositions() 
+            #             simulation.context.setPositions(positions)
 
-                        pdb_reporter = openmm.app.PDBReporter('trajectory.pdb', 10)
-                        simulation.reporters.append(pdb_reporter)
+            #             pdb_reporter = openmm.app.PDBReporter('trajectory.pdb', 10)
+            #             simulation.reporters.append(pdb_reporter)
                         
-                        simulation.minimizeEnergy(maxIterations=1000)
-                        st = simulation.context.getState(getPositions=True, getEnergy=True)
-                        print(st.getPotentialEnergy())
-                        print(st.getPositions())
-                        unitless_positions = []
-                        for vec in st.getPositions():
-                            x = vec.x * 10     # please don't let me forget this
-                            y = vec.y * 10     # how to do this in a... better... way 
-                            z = vec.z * 10
-                            unitless_positions.append([x, y, z])
-                        unitless_positions = numpy.array(unitless_positions)
-                        final_conf = unit.Quantity(unitless_positions, mol_conf._conformers[0].unit) # units should be angstrom
-                        min_conformers.append(final_conf)
+            #             simulation.minimizeEnergy(maxIterations=1000)
+            #             st = simulation.context.getState(getPositions=True, getEnergy=True)
+            #             print(st.getPotentialEnergy())
+            #             print(st.getPositions())
+            #             unitless_positions = []
+            #             for vec in st.getPositions():
+            #                 x = vec.x * 10     # please don't let me forget this
+            #                 y = vec.y * 10     # how to do this in a... better... way 
+            #                 z = vec.z * 10
+            #                 unitless_positions.append([x, y, z])
+            #             unitless_positions = numpy.array(unitless_positions)
+            #             final_conf = unit.Quantity(unitless_positions, mol_conf._conformers[0].unit) # units should be angstrom
+            #             min_conformers.append(final_conf)
 
-            mol_copy._conformers = min_conformers
-            args = ["-ek", 
-                    f"qm_theory='AM1', grms_tol=0.0005, scfconv=1.d-10, ndiis_attempts=700, qmcharge={net_charge}, maxcyc=0"]
-            status = run_am1_bcc(mol_copy, output_dir=f"{output_dir_str}/{mol.name}/smirnoff", arguments=args)
+            # mol_copy._conformers = min_conformers
+            # args = ["-ek", 
+            #         f"qm_theory='AM1', grms_tol=0.0005, scfconv=1.d-10, ndiis_attempts=700, qmcharge={net_charge}, maxcyc=0"]
+            # status = run_am1_bcc(mol_copy, output_dir=f"{output_dir_str}/{mol.name}/smirnoff", arguments=args)
 
-            line = ""
-            for conf, i in zip(mol_copy.conformers, range(0, len(mol_copy.conformers))):
-                mol_charges = output_dir / f"{mol.name}" / "smirnoff" / f"conf{i}" / f"charges_{mol_copy.name}.txt"
-                with open(str(mol_charges)) as file:
-                    charges = file.read().split()
-                line += (mol_copy.name + delim)
-                line += (f"{i}" + delim)
-                for item in status.iloc[i]:
-                    line += (str(item) + delim)
-                line += delim.join(charges)
-                line += "\n"
+            # line = ""
+            # for conf, i in zip(mol_copy.conformers, range(0, len(mol_copy.conformers))):
+            #     mol_charges = output_dir / f"{mol.name}" / "smirnoff" / f"conf{i}" / f"charges_{mol_copy.name}.txt"
+            #     with open(str(mol_charges)) as file:
+            #         charges = file.read().split()
+            #     line += (mol_copy.name + delim)
+            #     line += (f"{i}" + delim)
+            #     for item in status.iloc[i]:
+            #         line += (str(item) + delim)
+            #     line += delim.join(charges)
+            #     line += "\n"
 
-            open(f"{output_dir_str}/smirnoff_{output_dir_str}_status_results.txt","a").write(line)
+            # open(f"{output_dir_str}/smirnoff_{output_dir_str}_status_results.txt","a").write(line)
 
 
             #--------------------------------------------------------------------------------
@@ -1275,119 +1284,119 @@ if __name__ == "__main__":
                 line += "\n"
 
             open(f"{output_dir_str}/openeye_{output_dir_str}_status_results.txt","a").write(line)
-            #--------------------------------------------------------------------------------
-            # METHOD 6 ----------------------------------------------------------------------
-            #--------------------------------------------------------------------------------
-            # GEOMETRIC
-            # NOTE: this approach did not pan out as geometric would error often
-            line = ""
-            for conf, i in zip(mol.conformers, range(0, len(mol.conformers))):
-                off_molecule = Molecule(mol)
-                off_molecule._conformers = [conf]
-                frame_output_dir_str = f"{output_dir_str}/{mol.name}/geo_minor/conf{i}"
-                new_dir = Path(Path.cwd() / frame_output_dir_str)
-                new_dir.mkdir(exist_ok=True, parents=True)
+            # #--------------------------------------------------------------------------------
+            # # METHOD 6 ----------------------------------------------------------------------
+            # #--------------------------------------------------------------------------------
+            # # GEOMETRIC (hard to make work)
+            # # NOTE: this approach did not pan out as geometric would error often
+            # line = ""
+            # for conf, i in zip(mol.conformers, range(0, len(mol.conformers))):
+            #     off_molecule = Molecule(mol)
+            #     off_molecule._conformers = [conf]
+            #     frame_output_dir_str = f"{output_dir_str}/{mol.name}/geo_minor/conf{i}"
+            #     new_dir = Path(Path.cwd() / frame_output_dir_str)
+            #     new_dir.mkdir(exist_ok=True, parents=True)
 
-                file = f"{output_dir_str}/{mol.name}/original/conf{i}/sqm_{mol.name}.pdb"
-                rdmol = Chem.MolFromPDBFile(file, removeHs=False)
+            #     file = f"{output_dir_str}/{mol.name}/original/conf{i}/sqm_{mol.name}.pdb"
+            #     rdmol = Chem.MolFromPDBFile(file, removeHs=False)
 
-                geo_molecule = GeoMolecule()
-                geo_molecule.Data = {
-                    "resname": ["UNK"] * off_molecule.n_atoms,
-                    "resid": [0] * off_molecule.n_atoms,
-                    "elem": [atom.element.symbol for atom in off_molecule.atoms],
-                    "bonds": [
-                        (bond.atom1_index, bond.atom2_index) for bond in off_molecule.bonds
-                    ],
-                    "xyzs": [
-                        conformer.value_in_unit(unit.angstrom) 
-                        for conformer in off_molecule.conformers
-                    ],
-                }
-                #MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
-                # APPLYING THE xyz constraint
-                #WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
-                constrained_idxs = []
-                for rd_atom, off_atom in zip(rdmol.GetAtoms(), off_molecule.atoms):
-                    assert(rd_atom.GetAtomicNum() == off_atom.atomic_number)
-                    if len(rd_atom.GetBonds()) != len(off_atom.bonds):
-                        constrained_idxs.append(off_atom.molecule_atom_index)
-                        off_neighbors = []
-                        rd_neighbors = []
-                        for bond in off_atom.bonds:
-                            off_neighbors.append(bond.atom1_index)
-                            off_neighbors.append(bond.atom2_index)
-                        for bond in rd_atom.GetBonds():
-                            rd_neighbors.append(bond.GetEndAtomIdx())
-                            rd_neighbors.append(bond.GetBeginAtomIdx())
-                        off_neighbors = list(set(off_neighbors))
-                        rd_neighbors = list(set(rd_neighbors))
-                        if len(off_neighbors) > len(rd_neighbors):
-                            l1 = list(numpy.setdiff1d(off_neighbors, rd_neighbors))
-                        else:
-                            l1 = list(numpy.setdiff1d(rd_neighbors, off_neighbors))
-                        for l in l1:
-                            constrained_idxs.append(l)
-                constrained_idxs = sorted(list(set(constrained_idxs)))
+            #     geo_molecule = GeoMolecule()
+            #     geo_molecule.Data = {
+            #         "resname": ["UNK"] * off_molecule.n_atoms,
+            #         "resid": [0] * off_molecule.n_atoms,
+            #         "elem": [atom.element.symbol for atom in off_molecule.atoms],
+            #         "bonds": [
+            #             (bond.atom1_index, bond.atom2_index) for bond in off_molecule.bonds
+            #         ],
+            #         "xyzs": [
+            #             conformer.value_in_unit(unit.angstrom) 
+            #             for conformer in off_molecule.conformers
+            #         ],
+            #     }
+            #     #MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM
+            #     # APPLYING THE xyz constraint
+            #     #WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+            #     constrained_idxs = []
+            #     for rd_atom, off_atom in zip(rdmol.GetAtoms(), off_molecule.atoms):
+            #         assert(rd_atom.GetAtomicNum() == off_atom.atomic_number)
+            #         if len(rd_atom.GetBonds()) != len(off_atom.bonds):
+            #             constrained_idxs.append(off_atom.molecule_atom_index)
+            #             off_neighbors = []
+            #             rd_neighbors = []
+            #             for bond in off_atom.bonds:
+            #                 off_neighbors.append(bond.atom1_index)
+            #                 off_neighbors.append(bond.atom2_index)
+            #             for bond in rd_atom.GetBonds():
+            #                 rd_neighbors.append(bond.GetEndAtomIdx())
+            #                 rd_neighbors.append(bond.GetBeginAtomIdx())
+            #             off_neighbors = list(set(off_neighbors))
+            #             rd_neighbors = list(set(rd_neighbors))
+            #             if len(off_neighbors) > len(rd_neighbors):
+            #                 l1 = list(numpy.setdiff1d(off_neighbors, rd_neighbors))
+            #             else:
+            #                 l1 = list(numpy.setdiff1d(rd_neighbors, off_neighbors))
+            #             for l in l1:
+            #                 constrained_idxs.append(l)
+            #     constrained_idxs = sorted(list(set(constrained_idxs)))
 
                 
                 
-                constraint_input = "$freeze\nxyz "
-                inner_i = 0
-                for idx in constrained_idxs:
-                    if inner_i == 0:
-                        constraint_input += f"{idx+1}"
-                    else:
-                        constraint_input += f",{idx+1}"
-                    inner_i += 1
-                Cons, CVals = None, None
-                Cons, CVals = ParseConstraints(geo_molecule, constraint_input)
+            #     constraint_input = "$freeze\nxyz "
+            #     inner_i = 0
+            #     for idx in constrained_idxs:
+            #         if inner_i == 0:
+            #             constraint_input += f"{idx+1}"
+            #         else:
+            #             constraint_input += f",{idx+1}"
+            #         inner_i += 1
+            #     Cons, CVals = None, None
+            #     Cons, CVals = ParseConstraints(geo_molecule, constraint_input)
 
-                coord_sys = DelocalizedInternalCoordinates(
-                    geo_molecule,
-                    build=True,
-                    connect=True,
-                    addcart=False,
-                    constraints=Cons,
-                    cvals=CVals[0] if CVals is not None else None
-                )
+            #     coord_sys = DelocalizedInternalCoordinates(
+            #         geo_molecule,
+            #         build=True,
+            #         connect=True,
+            #         addcart=False,
+            #         constraints=Cons,
+            #         cvals=CVals[0] if CVals is not None else None
+            #     )
                 
-                try:
-                    result = Optimize(
-                        coords=geo_molecule.xyzs[0].flatten() * ang2bohr,
-                        molecule=geo_molecule,
-                        IC=coord_sys,
-                        engine=SQMAM1(geo_molecule, net_charge, save_output=True, frame_output_dir=frame_output_dir_str, mol_name=off_molecule.name, conf_idx=i),
-                        dirname=f"tmp-dir",
-                        params=OptParams(
-                            convergence_energy=10.0,
-                            convergence_grms=1.0,
-                            convergence_gmax=10.0,
-                            convergence_drms=10.0,
-                            convergence_dmax=10.0,
-                            maxiter=40
-                        )
-                    )
-                except GeomOptNotConvergedError:
-                    pass
+            #     try:
+            #         result = Optimize(
+            #             coords=geo_molecule.xyzs[0].flatten() * ang2bohr,
+            #             molecule=geo_molecule,
+            #             IC=coord_sys,
+            #             engine=SQMAM1(geo_molecule, net_charge, save_output=True, frame_output_dir=frame_output_dir_str, mol_name=off_molecule.name, conf_idx=i),
+            #             dirname=f"tmp-dir",
+            #             params=OptParams(
+            #                 convergence_energy=10.0,
+            #                 convergence_grms=1.0,
+            #                 convergence_gmax=10.0,
+            #                 convergence_drms=10.0,
+            #                 convergence_dmax=10.0,
+            #                 maxiter=40
+            #             )
+            #         )
+            #     except GeomOptNotConvergedError:
+            #         pass
 
-                with temporary_cd(frame_output_dir_str):
-                    select_frames = sorted(list(Path('charge_frames').glob('*')))[-4:]
-                    avg_charges = []
-                    for frame in select_frames:
-                        with open(frame, 'r') as ifile:
-                            charges = ifile.read()
-                        charges = charges.split()
-                        charges = [float(charge) for charge in charges]
-                        avg_charges.append(charges)
-                avg_charges = numpy.array(avg_charges)
-                geo_charges = numpy.mean(avg_charges, axis=0)
-                line += (mol.name + delim)
-                line += (f"{i}" + delim)
-                line += delim.join([str(a) for a in geo_charges])
-                line += "\n"
+            #     with temporary_cd(frame_output_dir_str):
+            #         select_frames = sorted(list(Path('charge_frames').glob('*')))[-4:]
+            #         avg_charges = []
+            #         for frame in select_frames:
+            #             with open(frame, 'r') as ifile:
+            #                 charges = ifile.read()
+            #             charges = charges.split()
+            #             charges = [float(charge) for charge in charges]
+            #             avg_charges.append(charges)
+            #     avg_charges = numpy.array(avg_charges)
+            #     geo_charges = numpy.mean(avg_charges, axis=0)
+            #     line += (mol.name + delim)
+            #     line += (f"{i}" + delim)
+            #     line += delim.join([str(a) for a in geo_charges])
+            #     line += "\n"
 
-            open(f"{output_dir_str}/geo_minor_{output_dir_str}_status_results.txt","a").write(line)
+            # open(f"{output_dir_str}/geo_minor_{output_dir_str}_status_results.txt","a").write(line)
 
             #--------------------------------------------------------------------------------
             # METHOD 7 ----------------------------------------------------------------------
